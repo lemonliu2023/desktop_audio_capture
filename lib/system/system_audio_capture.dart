@@ -14,8 +14,8 @@ enum _SystemAudioMethod {
 /// Class for capturing system audio (audio output from the device).
 ///
 /// This class allows you to capture audio that is being played by the system,
-/// such as music, videos, or other applications. It requires screen recording
-/// permissions on macOS.
+/// such as music, videos, or other applications. It requires system audio recording
+/// permission on macOS.
 ///
 /// Example:
 /// ```dart
@@ -185,7 +185,7 @@ class SystemAudioCapture extends AudioCapture {
 
   /// Starts capturing system audio.
   ///
-  /// This method will request necessary permissions (screen recording on macOS)
+  /// This method will request necessary permissions (system audio recording on macOS)
   /// and begin capturing audio from the system output.
   ///
   /// [config] is optional. If provided, it will update the current configuration
@@ -306,8 +306,9 @@ class SystemAudioCapture extends AudioCapture {
 
   /// Requests necessary permissions for system audio capture.
   ///
-  /// On macOS, this requests screen recording permission which is required
-  /// to capture system audio.
+  /// On macOS, the actual system audio recording permission is triggered
+  /// automatically by the OS when capture starts. This method is a no-op
+  /// placeholder that always returns true.
   ///
   /// Returns `true` if permissions are granted.
   ///

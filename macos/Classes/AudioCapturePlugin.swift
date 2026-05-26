@@ -10,8 +10,8 @@ public class AudioCapturePlugin: NSObject, FlutterPlugin {
     // Register the microphone plugin
     MicCapturePlugin.register(with: registrar)
 
-    // Register the system audio plugin (only available on macOS 13.0+)
-    if #available(macOS 13.0, *) {
+    // Register the system audio plugin (Core Audio Process Tap requires macOS 14.2+).
+    if #available(macOS 14.2, *) {
       SystemCapturePlugin.register(with: registrar)
     }
   }

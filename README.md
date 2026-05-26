@@ -9,7 +9,7 @@ A Flutter plugin for capturing audio on desktop platforms (macOS, Linux, Windows
 - 📊 **Decibel Monitoring**: Real-time audio level monitoring
 - 🎛️ **Device Management**: List and manage available input devices
 - ⚙️ **Configurable**: Configure sample rate, channels, bit depth, gain boost
-- 🔐 **Permissions Handling**: Automatic permission handling for microphone and screen recording
+- 🔐 **Permissions Handling**: Automatic permission handling for microphone and system audio recording
 
 ## Platform Support
 
@@ -173,7 +173,7 @@ for (final device in devices) {
 
 - `startCapture({SystemAudioConfig? config})`: Start capturing system audio
 - `stopCapture()`: Stop capture
-- `requestPermissions()`: Request screen recording permission (macOS)
+- `requestPermissions()`: Request system audio recording permission (macOS)
 - `updateConfig(SystemAudioConfig config)`: Update configuration
 
 #### Streams
@@ -233,13 +233,13 @@ for (final device in devices) {
   <string>This app needs access to the microphone to capture audio.</string>
   ```
 
-- **System Audio**: Requires Screen Recording permission in System Preferences. Add to `Info.plist`:
+- **System Audio**: Requires System Audio Recording permission in System Settings. Add to `Info.plist`:
   ```xml
   <key>NSScreenCaptureDescription</key>
-  <string>This app needs Screen Recording permission to capture system audio.</string>
+  <string>This app needs System Audio Recording permission to capture system audio.</string>
   ```
   
-  After adding to `Info.plist`, users need to grant permission in **System Preferences > Security & Privacy > Screen Recording**.
+  After adding to `Info.plist`, users need to grant permission in **System Settings > Privacy & Security > System Audio Recording**.
 
 ### Linux
 
