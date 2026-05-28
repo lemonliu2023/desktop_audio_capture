@@ -9,6 +9,16 @@ enum _SystemAudioMethod {
   startCapture,
   stopCapture,
   requestPermissions,
+  requestPermissionStatus,
+}
+
+/// 系统音频权限状态（两态）。
+///
+/// `deniedOrUnavailable` 合并了明确拒绝和当前无法可靠判定两种情况，
+/// 业务侧统一按“不可用”处理即可。
+enum SystemAudioPermissionStatus {
+  granted,
+  deniedOrUnavailable,
 }
 
 /// Class for capturing system audio (audio output from the device).
@@ -326,12 +336,57 @@ class SystemAudioCapture extends AudioCapture {
   /// }
   /// ```
   Future<bool> requestPermissions() async {
-    final hasPermission = await _channel.invokeMethod<bool>(
-      _SystemAudioMethod.requestPermissions.name,
-    );
-    if (hasPermission != true) {
+    final status = await requestPermissionStatus(requestAccess: true);
+    if (status != SystemAudioPermissionStatus.granted) {
       throw Exception('Screen recording permission not granted');
     }
     return true;
+  }
+
+  /// 获取系统音频权限两态。
+  ///
+  /// - `granted`: 已确认授权
+  /// - `deniedOrUnavailable`: 拒绝或无法可靠判定
+  ///
+  /// [requestAccess] 仅表达“是否允许插件尝试触发系统授权流程”；
+  /// 在无公开权限 API 的系统版本上，可能仍返回 `unavailable`。
+  Future<SystemAudioPermissionStatus> requestPermissionStatus({
+    bool requestAccess = true,
+  }) async {
+    try {
+      final raw = await _channel.invokeMethod<String>(
+        _SystemAudioMethod.requestPermissionStatus.name,
+        <String, dynamic>{'requestAccess': requestAccess},
+      );
+      switch (raw) {
+        case 'granted':
+          return SystemAudioPermissionStatus.granted;
+        default:
+          return SystemAudioPermissionStatus.deniedOrUnavailable;
+      }
+    } on MissingPluginException {
+      // 兼容旧原生实现：没有三态方法时，回退到布尔权限接口。
+      return _requestPermissionStatusLegacy();
+    } on PlatformException catch (error) {
+      // 兼容旧原生实现：method not implemented 也走旧接口。
+      if (error.code == 'MissingPluginException' ||
+          (error.message?.contains('not implemented') ?? false)) {
+        return _requestPermissionStatusLegacy();
+      }
+      rethrow;
+    }
+  }
+
+  Future<SystemAudioPermissionStatus> _requestPermissionStatusLegacy() async {
+    try {
+      final hasPermission = await _channel.invokeMethod<bool>(
+        _SystemAudioMethod.requestPermissions.name,
+      );
+      return hasPermission == true
+          ? SystemAudioPermissionStatus.granted
+          : SystemAudioPermissionStatus.deniedOrUnavailable;
+    } catch (_) {
+      return SystemAudioPermissionStatus.deniedOrUnavailable;
+    }
   }
 }

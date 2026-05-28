@@ -869,23 +869,19 @@ class MicCapturePlugin: NSObject, FlutterPlugin {
         
         // Debug: Check converted buffer
         if audioDataLogCount % 100 == 0 {
-            print("🔊 Converted buffer: frameLength=\(convertedBuffer.frameLength), format=\(convertedBuffer.format)")
             if let int16ChannelData = convertedBuffer.int16ChannelData {
                 let channel = int16ChannelData.pointee
                 let firstFew = (0..<min(5, Int(convertedBuffer.frameLength))).map { channel[$0] }
-                print("🔊 Converted buffer first few int16 samples: \(firstFew)")
             }
         }
         
         // Extract PCM data
         guard let audioData = extractPCMData(from: convertedBuffer) else {
-            print("⚠️ Decibel: Failed to extract PCM data")
             return
         }
         
         // Debug: log audio data size
         if audioDataLogCount % 100 == 0 {
-            print("🔊 Final audio data size: \(audioData.count) bytes")
         }
         
         // Debug log occasionally
@@ -965,7 +961,6 @@ class MicCapturePlugin: NSObject, FlutterPlugin {
         if audioDataLogCount % 100 == 0 {
             let channel = int16ChannelData.pointee
             let maxSample = (0..<frameLength).map { abs(channel[$0]) }.max() ?? 0
-            print("🔊 Extract PCM: frameLength=\(frameLength), channels=\(channelCount), maxSample=\(maxSample)")
         }
         
         // Apply gain boost and convert to mono if needed

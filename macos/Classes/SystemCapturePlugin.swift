@@ -72,6 +72,16 @@ struct AudioConfiguration {
 // MARK: - Main Plugin
 @available(macOS 14.2, *)
 final class SystemCapturePlugin: NSObject, FlutterPlugin, @unchecked Sendable {
+    private enum PermissionState: String {
+        case granted
+        case deniedOrUnavailable
+    }
+
+    enum SystemAudioPermissionResult {
+        case allowed
+        case deniedOrUnavailable(Error?)
+    }
+
     private var methodChannel: FlutterMethodChannel?
     private var eventChannel: FlutterEventChannel?
     private var eventSink: FlutterEventSink?
@@ -86,6 +96,7 @@ final class SystemCapturePlugin: NSObject, FlutterPlugin, @unchecked Sendable {
 
     private let stateQueue = DispatchQueue(label: "com.system_audio_transcriber.state_queue", qos: .utility)
     private var _isCapturing = false
+    private var _lastPermissionState: PermissionState = .deniedOrUnavailable
     var isCapturing: Bool {
         get { stateQueue.sync { _isCapturing } }
         set { stateQueue.async { [weak self] in self?._isCapturing = newValue } }
@@ -142,8 +153,11 @@ final class SystemCapturePlugin: NSObject, FlutterPlugin, @unchecked Sendable {
     func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch call.method {
         case "requestPermissions":
-            // Core Audio 的系统音频权限由启动 process tap 时触发；这里不再请求录屏权限。
-            result(true)
+            requestPermissions(result: result)
+        case "requestPermissionStatus":
+            let args = call.arguments as? [String: Any]
+            let requestAccess = (args?["requestAccess"] as? Bool) ?? true
+            requestPermissionStatus(requestAccess: requestAccess, result: result)
 
         case "startCapture":
             let config = call.arguments as? [String: Any]
@@ -180,13 +194,16 @@ final class SystemCapturePlugin: NSObject, FlutterPlugin, @unchecked Sendable {
             try newEngine.start()
             engine = newEngine
             isCapturing = true
+            _lastPermissionState = .granted
             sendStatusUpdate(isActive: true)
             result(true)
         } catch let error as CaptureError {
             cleanupResources()
+            _lastPermissionState = .deniedOrUnavailable
             result(FlutterError(code: "CAPTURE_ERROR", message: error.message, details: nil))
         } catch {
             cleanupResources()
+            _lastPermissionState = .deniedOrUnavailable
             result(FlutterError(code: "CAPTURE_ERROR", message: error.localizedDescription, details: "\(error)"))
         }
     }
@@ -200,6 +217,153 @@ final class SystemCapturePlugin: NSObject, FlutterPlugin, @unchecked Sendable {
         cleanupResources()
         result(true)
     }
+
+    private func requestPermissions(result: @escaping FlutterResult) {
+        requestPermissionStatus(requestAccess: true) { status in
+            result(status == .granted)
+        }
+    }
+
+    private func requestPermissionStatus(requestAccess: Bool, result: @escaping FlutterResult) {
+        requestPermissionStatus(requestAccess: requestAccess) { status in
+            // 返回三态字符串，供 Flutter 侧精确映射 UI 状态。
+            result(status.rawValue)
+        }
+    }
+
+    private func requestPermissionStatus(
+        requestAccess: Bool,
+        completion: @escaping (PermissionState) -> Void
+    ) {
+        // 已在采集时可认定授权通过。
+        if isCapturing {
+            completion(.granted)
+            return
+        }
+
+        // 通过 TCC SPI 即时查询权限状态（kTCCServiceAudioCapture），无需启动采集引擎探测。
+        // SPI 不可用时回退到探测法。
+        if let preflight = SystemCapturePlugin.tccPreflightFunc {
+            let result = preflight("kTCCServiceAudioCapture" as CFString, nil)
+            // TCCAccessPreflight 返回 0 = 已授权，非 0 = 未授权或待决。
+            if result == 0 {
+                _lastPermissionState = .granted
+                completion(.granted)
+                return
+            }
+
+            // 未授权：若 requestAccess=true 则通过 TCC SPI 触发系统权限弹窗。
+            if !requestAccess {
+                _lastPermissionState = .deniedOrUnavailable
+                completion(.deniedOrUnavailable)
+                return
+            }
+
+            if let requestFn = SystemCapturePlugin.tccRequestFunc {
+                requestFn("kTCCServiceAudioCapture" as CFString, nil) { [weak self] granted in
+                    let state: PermissionState = granted ? .granted : .deniedOrUnavailable
+                    self?._lastPermissionState = state
+                    DispatchQueue.main.async { completion(state) }
+                }
+                return
+            }
+
+            // request SPI 也不可用，直接返回已知状态。
+            _lastPermissionState = .deniedOrUnavailable
+            completion(.deniedOrUnavailable)
+            return
+        }
+
+        // TCC SPI 整体不可用时，回退到探测法（启动临时采集引擎，等待音频数据）。
+        if !requestAccess {
+            completion(_lastPermissionState)
+            return
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            let probeResult = await self.startSystemAudioCapture()
+            let mapped = self.mapPermissionState(from: probeResult)
+            self._lastPermissionState = mapped
+            DispatchQueue.main.async { completion(mapped) }
+        }
+    }
+
+    private func mapPermissionState(from result: SystemAudioPermissionResult) -> PermissionState {
+        switch result {
+        case .allowed:
+            return .granted
+        case .deniedOrUnavailable:
+            return .deniedOrUnavailable
+        }
+    }
+
+    // MARK: - 探测法 fallback（TCC SPI 不可用时使用）
+
+    private func startSystemAudioCapture() async -> SystemAudioPermissionResult {
+        do {
+            var receivedBuffer = false
+            let lock = NSLock()
+
+            let probeConfig = AudioConfiguration(sampleRate: 16000, channelCount: 1)
+            let probeEngine = try SystemAudioTapEngine(
+                config: probeConfig,
+                eventSink: { event in
+                    if let bytes = event as? FlutterStandardTypedData, !bytes.data.isEmpty {
+                        lock.lock()
+                        receivedBuffer = true
+                        lock.unlock()
+                    }
+                },
+                decibelEventSink: nil
+            )
+
+            try probeEngine.start()
+            defer { probeEngine.stop() }
+
+            let hasBuffer = await waitForFirstAudioBuffer(timeout: 1.5) {
+                lock.lock()
+                let value = receivedBuffer
+                lock.unlock()
+                return value
+            }
+            return hasBuffer ? .allowed : .deniedOrUnavailable(nil)
+        } catch {
+            return .deniedOrUnavailable(error)
+        }
+    }
+
+    private func waitForFirstAudioBuffer(
+        timeout: TimeInterval,
+        hasBuffer: @escaping () -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if hasBuffer() { return true }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return hasBuffer()
+    }
+
+    // MARK: - TCC 私有 SPI（系统音频录制权限 kTCCServiceAudioCapture）
+
+    private typealias TCCPreflightFunc = @convention(c) (CFString, CFDictionary?) -> Int32
+    private typealias TCCRequestFunc = @convention(c) (CFString, CFDictionary?, @escaping (Bool) -> Void) -> Void
+
+    private static let tccHandle: UnsafeMutableRawPointer? = {
+        dlopen("/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC", RTLD_NOW)
+    }()
+
+    private static let tccPreflightFunc: TCCPreflightFunc? = {
+        guard let h = tccHandle, let sym = dlsym(h, "TCCAccessPreflight") else { return nil }
+        return unsafeBitCast(sym, to: TCCPreflightFunc.self)
+    }()
+
+    private static let tccRequestFunc: TCCRequestFunc? = {
+        guard let h = tccHandle, let sym = dlsym(h, "TCCAccessRequest") else { return nil }
+        return unsafeBitCast(sym, to: TCCRequestFunc.self)
+    }()
+
 
     private func cleanupResources() {
         engine?.stop()
